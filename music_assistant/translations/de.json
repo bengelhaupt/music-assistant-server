@@ -1146,6 +1146,8 @@
   "provider.spotify_connect.config_entries.mass_player_id.options.__auto__": "Automatisch (bevorzugtes Wiedergabegerät)",
   "provider.spotify_connect.config_entries.publish_name.description": "Wie sollte dieses Spotify Connect-Gerät in der Spotify-App benannt werden?",
   "provider.spotify_connect.config_entries.publish_name.label": "Anzuzeigender Name in der Spotify-App",
+  "provider.spotify_connect.config_entries.zeroconf_port.description": "Der port für Zeroconf, 0 für einen zufälligen",
+  "provider.spotify_connect.config_entries.zeroconf_port.label": "Zeroconf port",
   "provider.spotify_connect.manifest.description": "Lässt ein Music Assistant-Wiedergabegerät über Spotify Connect als Gerät in der offiziellen Spotify-App erscheinen.",
   "provider.squeezelite.config_entries.cli_json_port.description": "Einige auf slimproto basierende Wiedergabegeräte benötigen die JSON-RPC-API von LMS, um weitere Informationen abzufragen. Zum Beispiel, um das Albumcover und andere Metadaten abzurufen. \n\nDiese JSON-RPC-API ist mit dem Logitech Media Server kompatibel, allerdings sind nicht alle Befehle implementiert. Es reicht gerade aus, um die Kompatibilität der Wiedergabegeräte zu gewährleisten. \n\nStandardmäßig wird diese JSON-CLI auf Port 9000 gehostet, aber die meisten Wiedergabegeräte akzeptieren sie auch auf einem anderen Port. Setze den Wert auf 0, um diese Funktion zu deaktivieren.\n\nDu kannst diese Option bedenkenlos deaktivieren, wenn du keine Wiedergabegeräte hast, die auf diese Funktion angewiesen sind, oder wenn dir die zusätzlichen Metadaten nicht wichtig sind.",
   "provider.squeezelite.config_entries.cli_json_port.label": "JSON-RPC-CLI\/API-Port",

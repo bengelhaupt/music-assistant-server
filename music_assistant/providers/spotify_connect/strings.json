@@ -10,6 +10,10 @@
     "publish_name": {
       "label": "Name to display in the Spotify app",
       "description": "How should this Spotify Connect device be named in the Spotify app?"
+    },
+    "zeroconf_port": {
+      "label": "Zeroconf port",
+      "description": "The port to use for Zeroconf, 0 for random"
     }
   },
   "errors": {

@@ -1146,6 +1146,8 @@
   "provider.spotify_connect.config_entries.mass_player_id.options.__auto__": "Automatisch (voorkeur voor spelende speler)",
   "provider.spotify_connect.config_entries.publish_name.description": "Hoe moet dit Spotify Connect-apparaat in de Spotify-app worden genoemd?",
   "provider.spotify_connect.config_entries.publish_name.label": "Naam die in de Spotify-app wordt weergegeven",
+  "provider.spotify_connect.config_entries.zeroconf_port.description": "De poort voor Zeroconf, 0 voor een toevalligen",
+  "provider.spotify_connect.config_entries.zeroconf_port.label": "Zeroconf port",
   "provider.spotify_connect.manifest.description": "Hiermee wordt een Music Assistant-speler via Spotify Connect als apparaat weergegeven in de officiële Spotify-app.",
   "provider.squeezelite.config_entries.cli_json_port.description": "Sommige op Slimproto gebaseerde spelers vereisen de aanwezigheid van de JSON-RPC API van het LMS om meer informatie op te vragen. Bijvoorbeeld om de albumhoes en andere metadata op te halen. \n\nDeze JSON-RPC API is compatibel met Logitech Media Server, maar niet alle commando's zijn geïmplementeerd. Het is net genoeg om compatibiliteit met de speler te garanderen. \n\nStandaard draait deze JSON CLI op poort 9000, maar de meeste mediaspelers accepteren deze ook op een andere poort. Stel de waarde in op 0 om deze functionaliteit uit te schakelen.\n\nJe kunt deze optie gerust uitschakelen als je geen spelers hebt die van deze functie afhankelijk zijn of als je de extra metadata niet belangrijk vindt.",
   "provider.squeezelite.config_entries.cli_json_port.label": "JSON-RPC CLI\/API-poort",

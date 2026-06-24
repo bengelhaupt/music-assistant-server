@@ -52,6 +52,7 @@ if TYPE_CHECKING:
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
 CONF_PUBLISH_NAME = "publish_name"
+CONF_ZEROCONF_PORT = "zeroconf_port"
 
 # Special value for auto player selection
 PLAYER_ID_AUTO = "__auto__"
@@ -88,6 +89,9 @@ PLAY_MEDIA_DEBOUNCE_S = 0.5
 # Ignore Spotify volume events for this long after a session becomes active, so
 # the player's own volume wins over librespot's initial value on (re)connect.
 INITIAL_VOLUME_GRACE_S = 3.0
+
+# Default zeroconf port. 0 means random port.
+DEFAULT_ZEROCONF_PORT = 0
 
 # User-facing message for the "not the active Spotify device" failure.
 # {0} is the Spotify Connect device's published name (see _not_active_error).
@@ -139,6 +143,13 @@ async def get_config_entries(
             key=CONF_PUBLISH_NAME,
             type=ConfigEntryType.STRING,
             default_value="Music Assistant",
+        ),
+        ConfigEntry(
+            key=CONF_ZEROCONF_PORT,
+            type=ConfigEntryType.INTEGER,
+            required=False,
+            default_value=DEFAULT_ZEROCONF_PORT,
+            advanced=True,
         ),
     )
 
@@ -677,6 +688,10 @@ class SpotifyConnectProvider(PluginProvider):
             "volume_steps": VOLUME_STEPS,
             "initial_volume": initial_volume,
             "zeroconf_enabled": True,
+            "zeroconf_port": cast(
+                "int",
+                self.config.get_value(CONF_ZEROCONF_PORT, DEFAULT_ZEROCONF_PORT)
+            ),
             "credentials": {"type": "zeroconf", "zeroconf": {"persist_credentials": True}},
             "server": {"enabled": True, "address": "127.0.0.1", "port": self._api_port},
         }

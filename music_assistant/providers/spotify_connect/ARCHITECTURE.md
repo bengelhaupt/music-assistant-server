@@ -82,7 +82,8 @@ already present in the base image. A clear error is raised when the binary is mi
 ## Configuration
 
 **Provider settings:** `mass_player_id` (the linked MA player; `__auto__` picks a playing player
-then the first available) and `publish_name` (the name shown in the Spotify app).
+then the first available), `publish_name` (the name shown in the Spotify app) and `zeroconf_port`
+(the port to use for Zeroconf).
 
 **go-librespot `config.yml`** (written per instance into the cache dir as JSON — JSON is valid
 YAML, avoiding a YAML dependency): pipe backend to `/dev/stdout` (`s16le`); `external_volume`
