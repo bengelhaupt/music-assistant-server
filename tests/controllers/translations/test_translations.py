@@ -19,7 +19,7 @@ from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.controllers import translations as translations_module
-from music_assistant.controllers.config import _with_translation_owner
+from music_assistant.controllers.config.helpers import _with_translation_owner
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.tasks.controller import _namespaced_translation_key
 from music_assistant.controllers.translations import (
@@ -347,7 +347,7 @@ def test_bare_list_config_entries_stamp_owner() -> None:
     """
     ctrl = _nl_controller()
     original = ConfigEntry(key="api_key", type=ConfigEntryType.STRING, label="API key")
-    stamped = _with_translation_owner([original], "provider.spotify", None, None)
+    stamped = _with_translation_owner([original], "provider.spotify")
     # the originals (often module-level CONF_ENTRY_* singletons) must not be mutated
     assert original.translation_owner is None
     assert stamped[0].translation_owner == "provider.spotify"

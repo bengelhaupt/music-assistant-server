@@ -14,9 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import podcastparser
 from aiohttp.client_exceptions import ClientError
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     MediaType,
     ProviderFeature,
@@ -35,6 +33,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.podcast_parsers import (
+    enrich_episode_chapters,
     get_podcastparser_dict,
     parse_podcast,
     parse_podcast_episode,
@@ -42,7 +41,7 @@ from music_assistant.helpers.podcast_parsers import (
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -62,41 +61,23 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    if not config.get_value(CONF_FEED_URL):
-        msg = "No podcast feed set"
-        raise InvalidProviderURI(msg)
     return PodcastMusicprovider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_FEED_URL,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-    )
 
 
 class PodcastMusicprovider(MusicProvider):
     """Podcast RSS Feed Music Provider."""
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self.feed_url = podcastparser.normalize_feed_url(str(self.config.get_value(CONF_FEED_URL)))
+        feed_url = self.get_setup_value(CONF_FEED_URL)
+        if not feed_url:
+            msg = "No podcast feed set"
+            raise InvalidProviderURI(msg)
+        self.feed_url = podcastparser.normalize_feed_url(str(feed_url))
         if self.feed_url is None:
             raise MediaNotFoundError("The specified feed url cannot be used.")
 
@@ -151,6 +132,11 @@ class PodcastMusicprovider(MusicProvider):
         for idx, episode in enumerate(self.parsed_podcast["episodes"]):
             if prov_episode_id == episode["guid"]:
                 if mass_episode := self._parse_episode(episode, idx):
+                    await enrich_episode_chapters(
+                        session=self.mass.http_session,
+                        chapters_json_url=episode.get("chapters_json_url"),
+                        mass_episode=mass_episode,
+                    )
                     return mass_episode
         raise MediaNotFoundError("Episode not found")
 
@@ -237,6 +223,7 @@ class PodcastMusicprovider(MusicProvider):
             prov_podcast_id=self.podcast_id,
             episode_cnt=fallback_position,
             podcast_cover=self.parsed_podcast.get("cover_url"),
+            podcast_name=self.parsed_podcast.get("title"),
             instance_id=self.instance_id,
             domain=self.domain,
             mass_item_id=episode_obj["guid"],

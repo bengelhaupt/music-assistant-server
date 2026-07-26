@@ -46,12 +46,13 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess, check_output
+from music_assistant.helpers.util import interface_name_for_ip
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.airplay_receiver.helpers import get_shairport_sync_binary
 from music_assistant.providers.airplay_receiver.metadata import MetadataReader
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -59,6 +60,7 @@ if TYPE_CHECKING:
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
 CONF_AIRPLAY_NAME = "airplay_name"
+DEFAULT_AIRPLAY_NAME = "Music Assistant"
 
 # Special value for auto player selection
 PLAYER_ID_AUTO = "__auto__"
@@ -70,50 +72,24 @@ SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 AUDIO_SOURCE_ID = "main"
 
 
+def airplay_receiver_port(instance_id: str) -> int:
+    """
+    Return the AirPlay port used by a receiver instance.
+
+    Deterministically derived from the instance id, so it stays the same across
+    server restarts (Python's built-in ``hash()`` is salted per process).
+
+    :param instance_id: The provider instance id of the AirPlay receiver.
+    """
+    digest = hashlib.md5(instance_id.encode(), usedforsecurity=False).hexdigest()
+    return 7000 + int(digest, 16) % 1000
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return AirPlayReceiverProvider(mass, manifest, config)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    return (
-        CONF_ENTRY_WARN_PREVIEW,
-        ConfigEntry(
-            key=CONF_MASS_PLAYER_ID,
-            type=ConfigEntryType.STRING,
-            multi_value=False,
-            default_value=PLAYER_ID_AUTO,
-            options=[
-                ConfigValueOption(PLAYER_ID_AUTO),
-                *(
-                    ConfigValueOption(x.player_id, title=x.display_name)
-                    for x in sorted(
-                        mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
-                    )
-                ),
-            ],
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_AIRPLAY_NAME,
-            type=ConfigEntryType.STRING,
-            default_value="Music Assistant",
-        ),
-    )
 
 
 class AirPlayReceiverProvider(PluginProvider):
@@ -141,9 +117,10 @@ class AirPlayReceiverProvider(PluginProvider):
         self.audio_pipe = AsyncNamedPipeWriter(audio_pipe_path)
         self.metadata_pipe = AsyncNamedPipeWriter(metadata_pipe_path)
         self.config_file = f"/tmp/ma_shairport_sync_{self.instance_id}.conf"  # noqa: S108
-        # Use port 7000+ for AirPlay 2 compatibility
-        # Each instance gets a unique port: 7000, 7001, 7002, etc.
-        self.airplay_port = 7000 + (hash(self.instance_id) % 1000)
+        # Use port 7000+ for AirPlay 2 compatibility, one unique port per instance.
+        # The port must be stable across restarts: the AirPlay provider uses it to
+        # recognize (and ignore) our own shairport-sync advertisement in discovery.
+        self.airplay_port = airplay_receiver_port(self.instance_id)
         airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
         # _audio_format describes the original AirPlay source (ALAC at 44.1/16,
         # the protocol-native format AirPlay senders use) and is what we
@@ -196,10 +173,39 @@ class AirPlayReceiverProvider(PluginProvider):
         # stream request — used to reject stale on_source_unselected callbacks
         # after a same-queue reconnect supersedes the previous request.
         self._active_session_id: str | None = None
+        self._pending_stop_task: asyncio.Task[None] | None = None
         self._on_unload_callbacks: list[Callable[..., None]] = []
         self._runner_error_count = 0
         self._metadata_reader: MetadataReader | None = None
         self._first_volume_event_received = False  # Track if we've received the first volume event
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            CONF_ENTRY_WARN_PREVIEW,
+            ConfigEntry(
+                key=CONF_MASS_PLAYER_ID,
+                type=ConfigEntryType.STRING,
+                multi_value=False,
+                default_value=PLAYER_ID_AUTO,
+                options=[
+                    ConfigValueOption(PLAYER_ID_AUTO),
+                    *(
+                        ConfigValueOption(x.player_id, title=x.display_name)
+                        for x in sorted(
+                            self.mass.players.all_players(False, False),
+                            key=lambda p: p.display_name.lower(),
+                        )
+                    ),
+                ],
+                required=True,
+            ),
+            ConfigEntry(
+                key=CONF_AIRPLAY_NAME,
+                type=ConfigEntryType.STRING,
+                default_value=DEFAULT_AIRPLAY_NAME,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -469,6 +475,7 @@ class AirPlayReceiverProvider(PluginProvider):
         config_content = config_content.replace("{METADATA_PIPE}", self.metadata_pipe.path)
         config_content = config_content.replace("{AUDIO_PIPE}", self.audio_pipe.path)
         config_content = config_content.replace("{PORT}", str(self.airplay_port))
+        config_content = config_content.replace("{INTERFACE_LINE}", self._get_mdns_interface_line())
 
         # Set default volume based on default player's current volume if available
         # Convert player volume (0-100) to AirPlay volume (-30.0 to 0.0 dB)
@@ -487,6 +494,27 @@ class AirPlayReceiverProvider(PluginProvider):
                 f.write(config_content)
 
         await asyncio.to_thread(_write_config)
+
+    def _get_mdns_interface_line(self) -> str:
+        """
+        Build the shairport-sync ``general.interface`` directive, or an empty string.
+
+        When the stream server is bound to a specific interface (not 0.0.0.0), pin
+        the AirPlay mDNS advertisement to that same interface so the receiver is
+        announced on the intended network instead of an unrelated one (e.g. a
+        Docker bridge). Returns an empty string to advertise on all interfaces.
+        """
+        bind_ip = self.mass.streams.bind_ip
+        if not bind_ip or bind_ip == "0.0.0.0":
+            return ""
+        iface_name = interface_name_for_ip(bind_ip)
+        if not iface_name:
+            self.logger.debug(
+                "No interface found for stream bind IP %s; advertising on all interfaces",
+                bind_ip,
+            )
+            return ""
+        return f'\tinterface = "{iface_name}";\n'
 
     async def _setup_pipes_and_config(self) -> None:
         """
@@ -664,11 +692,7 @@ class AirPlayReceiverProvider(PluginProvider):
                 if target_player_id:
                     self.logger.info("Starting AirPlay playback on player %s", target_player_id)
                     self._active_player_id = target_player_id
-                    self.mass.create_task(
-                        self.mass.player_queues.play_media(
-                            target_player_id, str(self._audio_source.uri)
-                        )
-                    )
+                    self.mass.create_task(self._start_playback(target_player_id))
                 else:
                     self.logger.warning(
                         "AirPlay playback started but no player available. "
@@ -685,9 +709,29 @@ class AirPlayReceiverProvider(PluginProvider):
             # Write silence to the pipe so ffmpeg can produce a chunk and notice the
             # stream has stopped; the stop command below closes the generator path.
             self.mass.create_task(self._write_silence_to_unblock_stream())
-            # Stop the player that was using this source
+            # Track the stop so a new session cannot overtake it.
             if current_player_id:
-                self.mass.create_task(self.mass.players.cmd_stop(current_player_id))
+                self._pending_stop_task = self.mass.create_task(
+                    self.mass.players.cmd_stop(current_player_id)
+                )
+
+    async def _start_playback(self, target_player_id: str) -> None:
+        """Start playback after any pending stop completes."""
+        pending_stop_task = self._pending_stop_task
+        if pending_stop_task is not None:
+            # Await (even if already done) so a failed stop's exception is retrieved,
+            # and continue regardless of how it failed: a stop that can't complete must
+            # not keep the next session from starting. The reference is cleared only
+            # after the await so concurrent starts (rapid "playing" events before the
+            # stream is claimed) all await the same stop instead of racing past it.
+            try:
+                await pending_stop_task
+            except Exception as err:
+                self.logger.warning("Failed to stop previous AirPlay playback: %s", err)
+            # Don't clear a newer stop that replaced ours while we were awaiting.
+            if self._pending_stop_task is pending_stop_task:
+                self._pending_stop_task = None
+        await self.mass.player_queues.play_media(target_player_id, str(self._audio_source.uri))
 
     def _handle_volume_change(self, volume: int) -> None:
         """

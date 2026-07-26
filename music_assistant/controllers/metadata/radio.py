@@ -49,7 +49,8 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
-    from music_assistant.providers.musicbrainz import MusicbrainzProvider, MusicBrainzReleaseGroup
+    from music_assistant.providers.musicbrainz import MusicbrainzProvider
+    from music_assistant.providers.musicbrainz.models import MusicBrainzReleaseGroup
 
 
 class RadioArtworkMixin:
@@ -220,7 +221,7 @@ class RadioArtworkMixin:
         ):
             if queue.current_item and queue.current_item.media_item:
                 if station_image := queue.current_item.media_item.image:
-                    return station_image.path
+                    return self.get_image_url(station_image)
         return None
 
     @staticmethod

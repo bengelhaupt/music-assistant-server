@@ -21,7 +21,10 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
+    BrowseFolder,
+    ItemMapping,
     MediaItemImage,
+    MediaItemType,
     Podcast,
     PodcastEpisode,
     ProviderMapping,
@@ -34,6 +37,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_PODCASTS
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.podcast_parsers import (
+    enrich_episode_chapters,
     get_podcastparser_dict,
     parse_podcast,
     parse_podcast_episode,
@@ -48,7 +52,7 @@ from music_assistant.providers.itunes_podcasts.schema import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -62,6 +66,7 @@ CONF_NUM_EPISODES = "num_episodes"
 CACHE_CATEGORY_PODCASTS = 0
 CACHE_CATEGORY_RECOMMENDATIONS = 1
 CACHE_KEY_TOP_PODCASTS = "top-podcasts"
+RECOMMENDATION_ROW_TOP_PODCASTS = "itunes-top-podcasts"
 
 SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
@@ -87,54 +92,41 @@ async def setup(
     return ITunesPodcastsProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    json_path = Path(__file__).parent / "itunes_country_codes.json"
-    async with aiofiles.open(json_path) as f:
-        country_codes = orjson.loads(await f.read())
-
-    language_options = [
-        ConfigValueOption(key.lower(), title=val) for key, val in country_codes.items()
-    ]
-    return (
-        CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN,
-        ConfigEntry(
-            key=CONF_LOCALE,
-            type=ConfigEntryType.STRING,
-            required=True,
-            options=language_options,
-        ),
-        ConfigEntry(
-            key=CONF_NUM_EPISODES,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            default_value=0,
-        ),
-        ConfigEntry(
-            key=CONF_EXPLICIT,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            default_value=True,
-        ),
-    )
-
-
 class ITunesPodcastsProvider(MusicProvider):
     """ITunesPodcastsProvider."""
 
     throttler: ThrottlerManager
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        json_path = Path(__file__).parent / "itunes_country_codes.json"
+        async with aiofiles.open(json_path) as f:
+            country_codes = orjson.loads(await f.read())
+
+        language_options = [
+            ConfigValueOption(key.lower(), title=val) for key, val in country_codes.items()
+        ]
+        return (
+            CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN,
+            ConfigEntry(
+                key=CONF_LOCALE,
+                type=ConfigEntryType.STRING,
+                required=True,
+                options=language_options,
+            ),
+            ConfigEntry(
+                key=CONF_NUM_EPISODES,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=0,
+            ),
+            ConfigEntry(
+                key=CONF_EXPLICIT,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=True,
+            ),
+        )
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -176,6 +168,35 @@ class ITunesPodcastsProvider(MusicProvider):
         result.podcasts = await self._perform_search(url, params)
 
         return result
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """
+        Get this provider's available recommendation rows, without items.
+
+        A single row with the top podcasts for the configured country.
+        """
+        return [
+            RecommendationFolder(
+                item_id=RECOMMENDATION_ROW_TOP_PODCASTS,
+                name="Trending Podcasts",
+                icon="mdi-trending-up",
+                translation_key="trending_podcasts",
+                provider=self.instance_id,
+            )
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id != RECOMMENDATION_ROW_TOP_PODCASTS:
+            return UniqueList()
+        search_results = await self._cache_get_top_podcasts()
+        return UniqueList(self._get_podcast_list(search_results))
 
     @throttle_with_retries
     async def _perform_search(self, url: str, params: dict[str, str | int]) -> list[Podcast]:
@@ -298,6 +319,7 @@ class ITunesPodcastsProvider(MusicProvider):
                 prov_podcast_id=prov_podcast_id,
                 episode_cnt=cnt,
                 podcast_cover=podcast_cover,
+                podcast_name=podcast.get("title"),
                 domain=self.domain,
                 instance_id=self.instance_id,
             ):
@@ -306,31 +328,30 @@ class ITunesPodcastsProvider(MusicProvider):
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get single podcast episode."""
         podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
-        async for mass_episode in self.get_podcast_episodes(podcast_id):
+        podcast = await self._cache_get_podcast(podcast_id)
+        podcast_cover = podcast.get("cover_url")
+        for cnt, episode in enumerate(podcast.get("episodes", [])):
+            mass_episode = parse_podcast_episode(
+                episode=episode,
+                prov_podcast_id=podcast_id,
+                episode_cnt=cnt,
+                podcast_cover=podcast_cover,
+                podcast_name=podcast.get("title"),
+                domain=self.domain,
+                instance_id=self.instance_id,
+            )
+            if mass_episode is None:
+                continue
             _, _guid_or_stream_url = mass_episode.item_id.split(" ")
             # this is enough, as internal
             if guid_or_stream_url == _guid_or_stream_url:
+                await enrich_episode_chapters(
+                    session=self.mass.http_session,
+                    chapters_json_url=episode.get("chapters_json_url"),
+                    mass_episode=mass_episode,
+                )
                 return mass_episode
         raise MediaNotFoundError("Episode not found")
-
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """
-        Get recommendations.
-
-        This provider uses a list of top podcasts for the configured country.
-        """
-        search_results = await self._cache_get_top_podcasts()
-        podcast_list = self._get_podcast_list(search_results)
-        return [
-            RecommendationFolder(
-                item_id="itunes-top-podcasts",
-                name="Trending Podcasts",
-                icon="mdi-trending-up",
-                translation_key="trending_podcasts",
-                items=UniqueList(podcast_list),
-                provider=self.instance_id,
-            )
-        ]
 
     async def _get_episode_stream_url(self, podcast_id: str, guid_or_stream_url: str) -> str | None:
         podcast = await self._cache_get_podcast(podcast_id)

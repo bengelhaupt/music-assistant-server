@@ -37,14 +37,14 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.helpers.process import AsyncProcess
-from music_assistant.helpers.util import select_free_port
+from music_assistant.helpers.util import interface_name_for_ip, select_free_port
 from music_assistant.models.plugin import PluginProvider
 
 from .client import GoLibrespotClient
-from .helpers import generate_device_id, get_go_librespot_binary, interface_name_for_ip
+from .helpers import generate_device_id, get_go_librespot_binary
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -106,52 +106,6 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return SpotifyConnectProvider(mass, manifest, config)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    :param instance_id: id of an existing provider instance (None if new instance setup).
-    :param action: [optional] action key called from config entries UI.
-    :param values: the (intermediate) raw values for config entries sent with the action.
-    """
-    return (
-        CONF_ENTRY_WARN_PREVIEW,
-        ConfigEntry(
-            key=CONF_MASS_PLAYER_ID,
-            type=ConfigEntryType.STRING,
-            multi_value=False,
-            default_value=PLAYER_ID_AUTO,
-            options=[
-                ConfigValueOption(PLAYER_ID_AUTO),
-                *(
-                    ConfigValueOption(x.player_id, title=x.display_name)
-                    for x in sorted(
-                        mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
-                    )
-                ),
-            ],
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PUBLISH_NAME,
-            type=ConfigEntryType.STRING,
-            default_value="Music Assistant",
-        ),
-        ConfigEntry(
-            key=CONF_ZEROCONF_PORT,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            default_value=DEFAULT_ZEROCONF_PORT,
-            advanced=True,
-        ),
-    )
 
 
 class SpotifyConnectProvider(PluginProvider):
@@ -236,6 +190,41 @@ class SpotifyConnectProvider(PluginProvider):
         # the active device away in the Spotify app and then presses play in MA.
         self._last_context_uri: str | None = None
         self._last_track_uri: str | None = None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            CONF_ENTRY_WARN_PREVIEW,
+            ConfigEntry(
+                key=CONF_MASS_PLAYER_ID,
+                type=ConfigEntryType.STRING,
+                multi_value=False,
+                default_value=PLAYER_ID_AUTO,
+                options=[
+                    ConfigValueOption(PLAYER_ID_AUTO),
+                    *(
+                        ConfigValueOption(x.player_id, title=x.display_name)
+                        for x in sorted(
+                            self.mass.players.all_players(False, False),
+                            key=lambda p: p.display_name.lower(),
+                        )
+                    ),
+                ],
+                required=True,
+            ),
+            ConfigEntry(
+                key=CONF_PUBLISH_NAME,
+                type=ConfigEntryType.STRING,
+                default_value="Music Assistant",
+            ),
+            ConfigEntry(
+                key=CONF_ZEROCONF_PORT,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=DEFAULT_ZEROCONF_PORT,
+                advanced=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

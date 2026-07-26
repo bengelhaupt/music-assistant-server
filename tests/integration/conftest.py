@@ -22,6 +22,7 @@ from zeroconf.asyncio import AsyncZeroconf
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import Player
+from tests.common import suppress_auto_loaded_providers, use_ephemeral_server_ports
 
 NUM_DEMO_PLAYERS = 3
 
@@ -87,13 +88,17 @@ def _create_mock_zeroconf() -> MagicMock:
 
 
 @pytest.fixture
-async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
+async def e2e_mass(
+    tmp_path: pathlib.Path,
+    unused_tcp_port_factory: Callable[[], int],
+) -> AsyncGenerator[MusicAssistant]:
     """
     Boot a hermetic MusicAssistant with only the fake `test` + demo player providers.
 
-    No real network discovery happens: mDNS (zeroconf) and SSDP are mocked and the
-    default device providers (dlna/sonos/...) are suppressed. The `test` music provider
-    and three grouped-capable demo players are configured and ready.
+    No real network discovery happens: mDNS (zeroconf) and SSDP are mocked, the
+    default device providers (dlna/sonos/...) are suppressed and so is local_audio,
+    which would otherwise register the host's sound devices as players. The `test`
+    music provider and three grouped-capable demo players are configured and ready.
     """
     storage_path = tmp_path / "data"
     cache_path = tmp_path / "cache"
@@ -106,6 +111,7 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     mass_instance.dev_mode = True
 
     with (
+        use_ephemeral_server_ports(unused_tcp_port_factory),
         patch(
             "music_assistant.controllers.discovery.controller.AsyncZeroconf",
             return_value=_create_mock_zeroconf(),
@@ -118,17 +124,18 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             "music_assistant.controllers.streams.controller.check_ffmpeg_version",
             new=AsyncMock(),
         ),
-        # hermetic: no real SSDP search and no auto-loaded device providers
+        # hermetic: no real SSDP search
         patch(
             "music_assistant.controllers.discovery.controller.async_upnp_search",
             new=AsyncMock(),
         ),
-        patch("music_assistant.mass.DEFAULT_PROVIDERS", ()),
+        # hermetic: no auto-loaded device providers and no host-audio bridging
+        suppress_auto_loaded_providers(),
     ):
         await mass_instance.start()
         # configure the fake music + player providers
-        await mass_instance.config.save_provider_config("test", {})
-        await mass_instance.config.save_provider_config(
+        await mass_instance.config._create_provider_instance("test", {})
+        await mass_instance.config._create_provider_instance(
             "_demo_player_provider", {"number_of_players": NUM_DEMO_PLAYERS}
         )
         await wait_for(lambda: len(demo_players(mass_instance)) >= NUM_DEMO_PLAYERS)

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
 
 from music_assistant_models.enums import (
     IdentifierType,
@@ -21,7 +21,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
 from pychromecast import IDLE_APP_ID
-from pychromecast.controllers.media import STREAM_TYPE_LIVE
+from pychromecast.controllers.media import MEDIA_PLAYER_STATE_BUFFERING, STREAM_TYPE_LIVE
 from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
@@ -131,11 +131,7 @@ class ChromecastPlayer(Player):
         """Start the chromecast socket client (must be called after __init__)."""
         await asyncio.to_thread(self.cc.start)
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         if self.type == PlayerType.GROUP:
             return [
@@ -498,8 +494,16 @@ class ChromecastPlayer(Player):
             status = group_player.cc.media_controller.status
 
         # player state
+        # pychromecast reports BUFFERING as 'playing', so a Cast group that underruns the
+        # LIVE flow stream at EOF never goes idle. Treat that case as idle so the queue
+        # can resume/restart.
+        flow_underrun = (
+            status.player_state == MEDIA_PLAYER_STATE_BUFFERING and self._flow_stream_underrun()
+        )
+        is_playing = status.player_is_playing and not flow_underrun
+        is_idle = status.player_is_idle or flow_underrun
         self._attr_elapsed_time_last_updated = time.time()
-        if status.player_is_playing:
+        if is_playing:
             self._attr_playback_state = PlaybackState.PLAYING
             self.set_current_media(uri=status.content_id or "", clear_all=True)
         elif status.player_is_paused:
@@ -514,7 +518,7 @@ class ChromecastPlayer(Player):
         # elapsed time
         self._attr_elapsed_time_last_updated = time.time()
         self._attr_elapsed_time = status.adjusted_current_time
-        if status.player_is_playing:
+        if is_playing:
             self._attr_elapsed_time = status.adjusted_current_time
         else:
             self._attr_elapsed_time = status.current_time
@@ -541,7 +545,7 @@ class ChromecastPlayer(Player):
                     )
                 )
 
-        if status.content_id and not status.player_is_idle:
+        if status.content_id and not is_idle:
             self.set_current_media(
                 uri=status.content_id,
                 title=status.title,
@@ -651,3 +655,11 @@ class ChromecastPlayer(Player):
             "metadata": metadata,
             "duration": media.duration,
         }
+
+    def _flow_stream_underrun(self) -> bool:
+        """Return whether the active queue's flow stream has been fully consumed."""
+        # Resolve the queue-owning player: a Cast group child mirrors the group's
+        # status, and a Cast exposed as a protocol player is wrapped by a universal
+        # player that owns the queue. Only a native/standalone Cast owns its own queue.
+        queue_id = self.active_cast_group or self.protocol_parent_id or self.player_id
+        return self.mass.player_queues.flow_stream_finished(queue_id)
