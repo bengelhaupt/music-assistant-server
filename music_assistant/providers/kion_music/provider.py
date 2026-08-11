@@ -43,7 +43,6 @@ from .api_client import KionMusicClient
 from .constants import (
     BROWSE_INITIAL_TRACKS,
     COLLECTION_FOLDER_ID,
-    CONF_ACTION_CLEAR_AUTH,
     CONF_BASE_URL,
     CONF_CODECS,
     CONF_LIKED_TRACKS_MAX_TRACKS,
@@ -296,23 +295,14 @@ class KionMusicProvider(MusicProvider):
         return folder.items
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
-        """Return Config entries to configure this provider."""
-        is_authenticated = bool(self.get_config_value(CONF_TOKEN))
+        """
+        Return Config entries to configure this provider.
+
+        The token is collected by the interactive setup flow (see setup_flow.py); this
+        surface only exposes the genuine playback options.
+        """
         return (
             CONF_ENTRY_UNOFFICIAL_PROVIDER,
-            # Authentication
-            ConfigEntry(
-                key=CONF_TOKEN,
-                type=ConfigEntryType.SECURE_STRING,
-                required=True,
-                hidden=is_authenticated,
-            ),
-            ConfigEntry(
-                key=CONF_ACTION_CLEAR_AUTH,
-                type=ConfigEntryType.ACTION,
-                action=CONF_ACTION_CLEAR_AUTH,
-                hidden=not is_authenticated,
-            ),
             # Quality
             ConfigEntry(
                 key=CONF_QUALITY,
@@ -374,16 +364,9 @@ class KionMusicProvider(MusicProvider):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
-        """Handle a one-shot config action button press and re-render the entries."""
-        if action == CONF_ACTION_CLEAR_AUTH:
-            self._update_config_value(CONF_TOKEN, None, immediate=True)
-            return await self.get_config_entries()
-        return await super().handle_config_action(action)
-
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        token = self.config.get_value(CONF_TOKEN)
+        token = self.get_setup_value(CONF_TOKEN)
         if not token:
             raise LoginFailed("No KION Music token provided")
 
@@ -1903,9 +1886,10 @@ class KionMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
         return parse_playlist(self, playlist)
 
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def _get_my_wave_playlist_tracks(self, page: int) -> list[Track]:
         """
-        Get My Mix tracks for virtual playlist (uncached; uses cursor for page > 0).
+        Get My Mix tracks for virtual playlist (uses cursor for page > 0).
 
         Fetches MY_WAVE_BATCH_SIZE Rotor API batches per page call to reduce
         the number of round-trips when the player controller paginates through pages.
@@ -1980,6 +1964,7 @@ class KionMusicProvider(MusicProvider):
             self._my_wave_playlist_next_cursor = next_cursor
             return tracks
 
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def _get_liked_tracks_playlist_tracks(self, page: int) -> list[Track]:
         """
         Get liked tracks for virtual playlist (sorted in reverse chronological order).
@@ -2433,7 +2418,6 @@ class KionMusicProvider(MusicProvider):
             icon="mdi-weather-sunny",
         )
 
-    @use_cache(3600 * 3, allow_expired_cache=True)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """
         Get playlist tracks.
@@ -2457,6 +2441,17 @@ class KionMusicProvider(MusicProvider):
             self.logger.debug("Liked Tracks playlist returned %s tracks", len(result))
             return result
 
+        return await self._get_regular_playlist_tracks(prov_playlist_id, page)
+
+    @use_cache(3600 * 3, allow_expired_cache=True)
+    async def _get_regular_playlist_tracks(self, prov_playlist_id: str, page: int) -> list[Track]:
+        """
+        Get the tracks of a regular (non-virtual) playlist.
+
+        :param prov_playlist_id: The provider playlist ID (format: "owner_id:kind").
+        :param page: Page number for pagination.
+        :return: List of Track objects.
+        """
         # KION Music API returns all playlist tracks in one call (no server-side pagination).
         # Return empty list for page > 0 so the controller pagination loop terminates.
         if page > 0:

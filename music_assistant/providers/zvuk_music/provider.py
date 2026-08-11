@@ -43,7 +43,6 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import ZvukMusicClient
 from .constants import (
-    CONF_ACTION_CLEAR_AUTH,
     CONF_QUALITY,
     CONF_TOKEN,
     DEFAULT_LIMIT,
@@ -73,21 +72,8 @@ class ZvukMusicProvider(MusicProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        is_authenticated = bool(self.get_config_value(CONF_TOKEN))
         return (
             CONF_ENTRY_UNOFFICIAL_PROVIDER,
-            ConfigEntry(
-                key=CONF_TOKEN,
-                type=ConfigEntryType.SECURE_STRING,
-                required=True,
-                hidden=is_authenticated,
-            ),
-            ConfigEntry(
-                key=CONF_ACTION_CLEAR_AUTH,
-                type=ConfigEntryType.ACTION,
-                action=CONF_ACTION_CLEAR_AUTH,
-                hidden=not is_authenticated,
-            ),
             ConfigEntry(
                 key=CONF_QUALITY,
                 type=ConfigEntryType.STRING,
@@ -99,16 +85,9 @@ class ZvukMusicProvider(MusicProvider):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
-        """Handle a one-shot config action button press and re-render the entries."""
-        if action == CONF_ACTION_CLEAR_AUTH:
-            self._update_config_value(CONF_TOKEN, None, immediate=True)
-            return await self.get_config_entries()
-        return await super().handle_config_action(action)
-
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        token = self.config.get_value(CONF_TOKEN)
+        token = self.get_setup_value(CONF_TOKEN)
         if not token:
             raise LoginFailed("No Zvuk Music token provided")
 
@@ -402,30 +381,6 @@ class ZvukMusicProvider(MusicProvider):
 
     # Library methods
 
-    async def _iter_batched(
-        self,
-        ids: list[str],
-        fetcher: Any,
-        parser: Any,
-        item_type: str,
-    ) -> AsyncGenerator[Any]:
-        """
-        Yield parsed items by fetching ``ids`` in batches of DEFAULT_LIMIT.
-
-        :param ids: List of item IDs to fetch.
-        :param fetcher: Async callable that accepts a list of IDs and returns a list of raw items.
-        :param parser: Callable(provider, raw_item) → MA media item.
-        :param item_type: Human-readable type name for debug log messages.
-        """
-        for i in range(0, len(ids), DEFAULT_LIMIT):
-            batch = ids[i : i + DEFAULT_LIMIT]
-            items = await fetcher(batch)
-            for item in items:
-                try:
-                    yield parser(self, item)
-                except InvalidDataError as err:
-                    self.logger.debug("Error parsing library %s: %s", item_type, err)
-
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from Zvuk Music."""
         collection = await self.client.get_collection()
@@ -477,31 +432,6 @@ class ZvukMusicProvider(MusicProvider):
                 yield parse_playlist(self, simple_pl)
             except InvalidDataError as err:
                 self.logger.debug("Error parsing synthesis playlist: %s", err)
-
-    async def _get_for_you_playlists(self) -> list[Playlist]:
-        """Fetch and parse Zvuk's personalized synthesis playlists («Плейлисты для вас»)."""
-        synthesis_playlists = await self.client.get_short_playlists(SYNTHESIS_PLAYLIST_IDS)
-        result: list[Playlist] = []
-        for simple_pl in synthesis_playlists:
-            try:
-                result.append(parse_playlist(self, simple_pl))
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing synthesis playlist: %s", err)
-        return result
-
-    async def _get_editorial_playlists(self) -> list[Playlist]:
-        """Fetch and parse Zvuk's editorial curated playlists («Подборки»)."""
-        editorial_ids = await self.client.get_editorial_playlist_ids()
-        if not editorial_ids:
-            return []
-        full_playlists = await self.client.get_playlists(editorial_ids[:DEFAULT_LIMIT])
-        result: list[Playlist] = []
-        for full_pl in full_playlists:
-            try:
-                result.append(parse_playlist(self, full_pl))
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing editorial playlist: %s", err)
-        return result
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """
@@ -657,7 +587,7 @@ class ZvukMusicProvider(MusicProvider):
             ),
         }
         if is_zvuk:
-            token = self.config.get_value(CONF_TOKEN)
+            token = self.get_setup_value(CONF_TOKEN)
             if not token:
                 return str(path)
             headers["X-Auth-Token"] = str(token)
@@ -711,13 +641,6 @@ class ZvukMusicProvider(MusicProvider):
         if media_type == MediaType.PLAYLIST:
             return await self.client.unlike_playlist(prov_item_id)
         return False
-
-    def _get_provider_item_id(self, item: MediaItemType) -> str | None:
-        """Get provider item ID from media item."""
-        for mapping in item.provider_mappings:
-            if mapping.provider_instance == self.instance_id:
-                return mapping.item_id
-        return item.item_id if item.provider == self.instance_id else None
 
     # Playlist management
 
@@ -856,3 +779,59 @@ class ZvukMusicProvider(MusicProvider):
             allow_seek=True,
             can_seek=True,
         )
+
+    async def _iter_batched(
+        self,
+        ids: list[str],
+        fetcher: Any,
+        parser: Any,
+        item_type: str,
+    ) -> AsyncGenerator[Any]:
+        """
+        Yield parsed items by fetching ``ids`` in batches of DEFAULT_LIMIT.
+
+        :param ids: List of item IDs to fetch.
+        :param fetcher: Async callable that accepts a list of IDs and returns a list of raw items.
+        :param parser: Callable(provider, raw_item) → MA media item.
+        :param item_type: Human-readable type name for debug log messages.
+        """
+        for i in range(0, len(ids), DEFAULT_LIMIT):
+            batch = ids[i : i + DEFAULT_LIMIT]
+            items = await fetcher(batch)
+            for item in items:
+                try:
+                    yield parser(self, item)
+                except InvalidDataError as err:
+                    self.logger.debug("Error parsing library %s: %s", item_type, err)
+
+    async def _get_for_you_playlists(self) -> list[Playlist]:
+        """Fetch and parse Zvuk's personalized synthesis playlists («Плейлисты для вас»)."""
+        synthesis_playlists = await self.client.get_short_playlists(SYNTHESIS_PLAYLIST_IDS)
+        result: list[Playlist] = []
+        for simple_pl in synthesis_playlists:
+            try:
+                result.append(parse_playlist(self, simple_pl))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing synthesis playlist: %s", err)
+        return result
+
+    async def _get_editorial_playlists(self) -> list[Playlist]:
+        """Fetch and parse Zvuk's editorial curated playlists («Подборки»)."""
+        editorial_ids = await self.client.get_editorial_playlist_ids()
+        if not editorial_ids:
+            return []
+        full_playlists = await self.client.get_playlists(editorial_ids[:DEFAULT_LIMIT])
+        result: list[Playlist] = []
+        for full_pl in full_playlists:
+            try:
+                result.append(parse_playlist(self, full_pl))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing editorial playlist: %s", err)
+        return result
+
+    def _get_provider_item_id(self, item: MediaItemType) -> str | None:
+        """Get provider item ID from media item."""
+        for mapping in item.provider_mappings:
+            if mapping.provider_instance == self.instance_id:
+                return mapping.item_id
+        return item.item_id if item.provider == self.instance_id else None

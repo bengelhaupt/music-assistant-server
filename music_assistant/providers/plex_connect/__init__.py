@@ -11,13 +11,13 @@ Multiple instances can be created to expose multiple MA players to Plex.
 from __future__ import annotations
 
 import asyncio
-import socket
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, EventType, ProviderFeature
 
+from music_assistant.helpers.util import is_port_in_use, select_free_port
 from music_assistant.models.plugin import PluginProvider
 
 from .server import PlayerRemoteInstance
@@ -55,6 +55,8 @@ async def setup(
 class PlexConnectProvider(PluginProvider):
     """Plex Connect plugin provider implementation."""
 
+    reload_on_streams_network_change = True
+
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
@@ -66,8 +68,8 @@ class PlexConnectProvider(PluginProvider):
         :param config: Provider configuration.
         """
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        self.mass_player_id = cast("str", self.config.get_value(CONF_MASS_PLAYER_ID))
-        self.plex_provider_id = cast("str", self.config.get_value(CONF_PLEX_PROVIDER_ID))
+        self.mass_player_id = cast("str", self.get_setup_value(CONF_MASS_PLAYER_ID))
+        self.plex_provider_id = cast("str", self.get_setup_value(CONF_PLEX_PROVIDER_ID))
         self.custom_player_name = cast("str | None", self.config.get_value(CONF_PLAYER_NAME))
         self.device_class = cast("str", self.config.get_value(CONF_DEVICE_CLASS)) or "speaker"
 
@@ -79,34 +81,7 @@ class PlexConnectProvider(PluginProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        # Get available Plex music providers
-        plex_providers = [
-            provider
-            for provider in self.mass.get_providers()
-            if provider.domain == "plex" and provider.type.value == "music"
-        ]
         return (
-            ConfigEntry(
-                key=CONF_PLEX_PROVIDER_ID,
-                type=ConfigEntryType.STRING,
-                required=True,
-                options=[
-                    ConfigValueOption(provider.instance_id, title=provider.name)
-                    for provider in plex_providers
-                ],
-            ),
-            ConfigEntry(
-                key=CONF_MASS_PLAYER_ID,
-                type=ConfigEntryType.STRING,
-                required=True,
-                options=[
-                    ConfigValueOption(x.player_id, title=x.display_name)
-                    for x in sorted(
-                        self.mass.players.all_players(False, False),
-                        key=lambda p: p.display_name.lower(),
-                    )
-                ],
-            ),
             ConfigEntry(
                 key=CONF_PLAYER_NAME,
                 type=ConfigEntryType.STRING,
@@ -198,40 +173,7 @@ class PlexConnectProvider(PluginProvider):
             callback()
         self._on_unload_callbacks.clear()
 
-    def _is_port_available(self, port: int) -> bool:
-        """
-        Check if a port is available by attempting to bind to it.
-
-        :param port: Port number to check.
-        :return: True if port is available, False otherwise.
-        """
-        try:
-            # Try to bind to the port on all interfaces
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                sock.bind(("", port))
-                return True
-        except OSError:
-            return False
-
-    def _find_available_port(self) -> int:
-        """
-        Find the first available port in the configured range.
-
-        :return: First available port number.
-        """
-        for port in range(PORT_RANGE_START, PORT_RANGE_START + PORT_RANGE_ATTEMPTS):
-            if self._is_port_available(port):
-                return port
-
-        # Fallback - should rarely happen
-        msg = (
-            f"Could not find available port in range "
-            f"{PORT_RANGE_START}-{PORT_RANGE_START + PORT_RANGE_ATTEMPTS}"
-        )
-        raise RuntimeError(msg)
-
-    def _resolve_port(self) -> int:
+    async def _resolve_port(self) -> int:
         """
         Return the long-term port for this instance, allocating one if needed.
 
@@ -242,10 +184,15 @@ class PlexConnectProvider(PluginProvider):
         :return: The port to bind this instance's remote control server to.
         """
         configured_port = self.config.get_value(CONF_PORT)
-        if isinstance(configured_port, int) and self._is_port_available(configured_port):
+        # Probe on IPv4 all-interfaces, matching how the remote control server binds
+        if isinstance(configured_port, int) and not await is_port_in_use(
+            configured_port, host="0.0.0.0"
+        ):
             return configured_port
 
-        port = self._find_available_port()
+        port = await select_free_port(
+            PORT_RANGE_START, PORT_RANGE_START + PORT_RANGE_ATTEMPTS, host="0.0.0.0"
+        )
         if port != configured_port:
             try:
                 self.mass.config.set_raw_provider_config_value(self.instance_id, CONF_PORT, port)
@@ -271,7 +218,7 @@ class PlexConnectProvider(PluginProvider):
 
         # Resolve the long-term port for this instance (persisted across restarts)
         if not self._allocated_port:
-            self._allocated_port = self._resolve_port()
+            self._allocated_port = await self._resolve_port()
 
         # Use custom name if provided, otherwise use player's display name
         player_name = self.custom_player_name or player.display_name
